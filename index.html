@@ -200,29 +200,132 @@
   const clearBtn = document.getElementById('clearBtn');
   const downloadBtn = document.getElementById('downloadBtn');
 
-  startBtn.addEventListener('click', async ()=>{
-    try{
-      audioChunks = [];
+  // ---------- added: permission-aware web recording with native fallback ----------
+  // native bridge wrappers (NativeRecorder is provided by Android MainActivity)
+  function nativeStart() {
+    try {
+      if (window.NativeRecorder && window.NativeRecorder.startRecording) {
+        window.NativeRecorder.startRecording();
+      } else {
+        console.warn('NativeRecorder not available');
+      }
+    } catch (e) { console.error(e); }
+  }
+  function nativeStopAndUpload() {
+    try {
+      if (window.NativeRecorder && window.NativeRecorder.stopRecordingAndUpload) {
+        window.NativeRecorder.stopRecordingAndUpload();
+      } else {
+        console.warn('NativeRecorder not available');
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  // JS callbacks invoked by native Java (RecorderBridge)
+  window.onNativeRecordingStarted = function() {
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    startBtn.textContent = 'Recording… (native)';
+  };
+
+  window.onNativeUploadComplete = function(data) {
+    console.log('Native upload complete', data);
+    try {
+      const json = typeof data === 'string' ? JSON.parse(data) : data;
+      if (json && json.chunks) {
+        json.chunks.forEach(c => {
+          const ul = document.getElementById('history');
+          const li = document.createElement('li');
+          const left = document.createElement('div'); left.style.display='flex'; left.style.flexDirection='column';
+          const main = document.createElement('div'); main.textContent = c.text || '—';
+          const meta = document.createElement('div'); meta.className='meta'; meta.textContent = c.date || '';
+          left.appendChild(main); left.appendChild(meta); li.appendChild(left); ul.insertBefore(li, ul.firstChild);
+        });
+      }
+    } catch (e) {
+      console.log('onNativeUploadComplete: response not JSON', e);
+    }
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    startBtn.textContent = 'Start recording';
+  };
+
+  window.onNativeUploadError = function(msg) {
+    alert('Upload error: ' + msg);
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    startBtn.textContent = 'Start recording';
+  };
+
+  window.onNativeRecordingError = function(msg) {
+    alert('Recording error: ' + msg);
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    startBtn.textContent = 'Start recording';
+  };
+
+  // permission-aware web recording + native fallback
+  async function startRecordingWeb() {
+    audioChunks = [];
+    try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorder = new MediaRecorder(stream);
       mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
       mediaRecorder.start();
       startBtn.disabled = true; stopBtn.disabled = false; startBtn.textContent = 'Recording…';
-    }catch(err){ console.error('Microphone access denied', err); alert('Microphone access is required to record.'); }
+      return true;
+    } catch (err) {
+      console.warn('Web getUserMedia failed', err);
+      return false;
+    }
+  }
+
+  async function stopRecordingWebAndUpload() {
+    if (!mediaRecorder) return;
+    mediaRecorder.stop();
+    mediaRecorder.onstop = async () => {
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      const form = new FormData(); form.append('file', blob, 'recording.webm');
+      try {
+        const res = await fetch(recordedEndpoint, { method: 'POST', body: form });
+        if (!res.ok) { document.getElementById('immediate') && (document.getElementById('immediate').innerText = 'Error: ' + res.status); return; }
+        const json = await res.json(); document.getElementById('immediate') && (document.getElementById('immediate').innerText = JSON.stringify(json, null, 2));
+        if (json && Array.isArray(json.chunks)) {
+          json.chunks.forEach(c => {
+            const ul = document.getElementById('history');
+            const li = document.createElement('li');
+            const left = document.createElement('div'); left.style.display='flex'; left.style.flexDirection='column';
+            const main = document.createElement('div'); main.textContent = c || c.text || '—';
+            const meta = document.createElement('div'); meta.className='meta'; meta.textContent = (new Date()).toLocaleString();
+            left.appendChild(main); left.appendChild(meta); li.appendChild(left); ul.insertBefore(li, ul.firstChild);
+          });
+        }
+      } catch (err) {
+        console.error('Upload failed', err);
+        document.getElementById('immediate') && (document.getElementById('immediate').innerText = 'Upload failed — see console');
+      } finally {
+        startBtn.disabled = false; stopBtn.disabled = true; startBtn.textContent = 'Start recording';
+      }
+    };
+  }
+
+  // Start/Stop handlers (use web path first; fallback to native)
+  startBtn.addEventListener('click', async () => {
+    const ok = await startRecordingWeb();
+    if (!ok) {
+      console.log('Falling back to native recorder');
+      nativeStart();
+    }
   });
 
-  stopBtn.addEventListener('click', ()=>{
-    if(!mediaRecorder) return;
-    mediaRecorder.stop(); startBtn.disabled = false; stopBtn.disabled = true; startBtn.textContent = 'Start recording';
-    mediaRecorder.onstop = async ()=>{
-      const blob = new Blob(audioChunks, { type: 'audio/webm' }); const form = new FormData(); form.append('file', blob, 'recording.webm');
-      try{
-        const res = await fetch(recordedEndpoint, { method: 'POST', body: form });
-        if(!res.ok){ document.getElementById('immediate').innerText = 'Error: ' + res.status; return; }
-        const json = await res.json(); document.getElementById('immediate').innerText = JSON.stringify(json, null, 2);
-      }catch(err){ console.error('Upload failed', err); document.getElementById('immediate').innerText = 'Upload failed — see console'; }
-    };
+  stopBtn.addEventListener('click', () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      stopRecordingWebAndUpload();
+    } else {
+      nativeStopAndUpload();
+    }
   });
+  // ---------- end added section ----------
 
   async function loadLatestOnce(){
     try{ const r = await fetch(latestEndpoint); if(r.ok){ const j = await r.json(); const ul = document.getElementById('history'); ul.innerHTML = ''; (j.rows || []).reverse().forEach(row => { const li = document.createElement('li'); const left = document.createElement('div'); left.style.display='flex'; left.style.flexDirection='column'; const main = document.createElement('div'); main.textContent = row.text || '—'; const meta = document.createElement('div'); meta.className='meta'; meta.textContent = row.date || ''; left.appendChild(main); left.appendChild(meta); li.appendChild(left); ul.appendChild(li); }); } }catch(e){ console.warn('loadLatestOnce failed', e) }
@@ -231,9 +334,9 @@
   refreshBtn.addEventListener('click', loadLatestOnce);
   clearBtn.addEventListener('click', ()=>{ if(confirm('Clear local history view?')) document.getElementById('history').innerHTML = '' });
 
-  downloadBtn.addEventListener('click', ()=>{
-    const rows = Array.from(document.querySelectorAll('#history li')).map(li => { const cols = li.innerText.split(''); return '"' + cols.join('","') + '"'; });
-    const csv = 'text/csv;charset=utf-8,' + ['text,date', ...rows].join(''); const a = document.createElement('a'); a.href = 'data:' + csv; a.download = 'attendance.csv'; a.click();
+  downloadBtn.addEventListener('click', ()=>{ 
+    const rows = Array.from(document.querySelectorAll('#history li')).map(li => { const cols = li.innerText.split(''); return '"' + cols.join('","') + '"'; }); 
+    const csv = 'text/csv;charset=utf-8,' + ['text,date', ...rows].join(''); const a = document.createElement('a'); a.href = 'data:' + csv; a.download = 'attendance.csv'; a.click(); 
   });
 
   // initial load
@@ -241,8 +344,3 @@
   </script>
 </body>
 </html>
-
-
-
-
-
