@@ -152,7 +152,7 @@
     }
   } catch (e) { console.warn(e); }
   // ---- configuration (replace with your ngrok/host) ----
-  const ngrokUrl = "https://rude-frogs-sort.loca.lt"; // update to your URL
+  const ngrokUrl = " https://sad-jeans-cheat.loca.lt"; // update to your URL
   const recordedEndpoint = ngrokUrl + "/recorded";
   const latestEndpoint = ngrokUrl + "/latest?count=50";
 
@@ -334,10 +334,73 @@
   refreshBtn.addEventListener('click', loadLatestOnce);
   clearBtn.addEventListener('click', ()=>{ if(confirm('Clear local history view?')) document.getElementById('history').innerHTML = '' });
 
-  downloadBtn.addEventListener('click', ()=>{ 
-    const rows = Array.from(document.querySelectorAll('#history li')).map(li => { const cols = li.innerText.split(''); return '"' + cols.join('","') + '"'; }); 
-    const csv = 'text/csv;charset=utf-8,' + ['text,date', ...rows].join(''); const a = document.createElement('a'); a.href = 'data:' + csv; a.download = 'attendance.csv'; a.click(); 
-  });
+  downloadBtn.addEventListener('click', () => {
+    const lis = Array.from(document.querySelectorAll('#history li'));
+
+    // helper: format "2025-11-21 16:26:10" -> "21-Jan-2025"
+    function formatDate(dateText) {
+      if (!dateText) return '';
+      // convert "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DDTHH:MM:SS"
+      const clean = dateText.trim().replace(' ', 'T');
+      const d = new Date(clean);
+      if (isNaN(d.getTime())) return dateText; // fallback if parsing fails
+      const day = String(d.getDate()).padStart(2, '0');
+      const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const month = monthNames[d.getMonth()];
+      const year = d.getFullYear();
+      return `${day}-${month}-${year}`;
+    }
+
+    const rows = [];
+
+    lis.forEach(li => {
+      const mainEl = li.querySelector('div > div:not(.meta)'); // first text div
+      const metaEl = li.querySelector('.meta');
+
+      const fullText = (mainEl?.textContent || '').trim();
+      const dateRaw  = (metaEl?.textContent || '').trim();
+
+      let name = '';
+      let className = '';
+
+      // Try to parse: "my name is X and class Y"
+      const m = fullText.match(/my name is\s+(.+?)\s+and\s+class\s+(.+?)(\.|,|$)/i);
+      if (m) {
+        name = m[1].trim();
+        className = m[2].trim();
+      } else {
+        // fallback: put everything into "name" if pattern not matched
+        name = fullText;
+      }
+
+      const formattedDate = formatDate(dateRaw);
+      rows.push([name, className, formattedDate]);
+    });
+
+  // Build CSV: header + rows
+  const header = ['name', 'class', 'date'];
+  const csvLines = [header, ...rows].map(cols =>
+    cols
+      .map(v => {
+        const s = String(v ?? '');
+        // escape quotes
+        return `"${s.replace(/"/g, '""')}"`;
+      })
+      .join(',')
+  );
+
+  const csvContent = csvLines.join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'attendance.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
 
   // initial load
   loadLatestOnce();
